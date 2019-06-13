@@ -1,0 +1,201 @@
+class RandomForestAnalyzer:
+    
+    
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++    
+    def __init__(self, RFRegressor):   
+        self._rfr = RFRegressor
+        pass
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++    
+    def _get_forest_d_path(self,X):  
+        m = self._rfr.decision_path(np.array(X).reshape(1,-1))
+        count = 0
+        dnodes_csr = m[0].indices
+        dnodes_pos_csr = m[1]
+        dnodes_pos_trees = []
+        for _ in self._rfr.estimators_:
+            tree = _.tree_
+            lower = dnodes_pos_csr[count]
+            upper = dnodes_pos_csr[count + 1]-1 
+            dnodes_pos = []
+            for elem in dnodes_csr:
+                if lower <= elem <= upper:
+                    dnodes_pos.append(elem-lower)        
+            dnodes_pos_trees.append(dnodes_pos)  
+            count = count + 1
+        forest_d_path = []
+        count = 0
+        for tree in dnodes_pos_trees:
+            tree_d_path = []
+            tm = self._get_tree_metrics_fast(self._rfr.estimators_[count].tree_)
+            for dnode in tree:
+                _ = tm[dnode]
+                tree_d_path.append(_)
+            forest_d_path.append(tree_d_path)
+            count = count + 1            
+        return forest_d_path
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++    
+    def _get_tree_metrics_fast(self,tree):
+        tree_structure = []
+        for node in range(tree.node_count):
+            tmp = self._get_node_metrics(tree,node)
+            tree_structure.append(tmp)
+        return tree_structure
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _get_node_metrics(self,tree,node_id):
+        node_id = int(node_id)
+        is_leaf_node = False
+        is_root_node = False
+        if node_id == 0:
+            is_root_node = True
+        if tree.children_left[node_id] == -1 and tree.children_right[node_id] == -1:
+            is_leaf_node = True
+            node_feature = None
+            node_threshold = None
+            node_impurity = tree.impurity[node_id]
+            impurity_reduction = None
+            samples = tree.n_node_samples[node_id]
+            samples_percent  = tree.n_node_samples[node_id]/tree.n_node_samples[0]
+            value = tree.value[node_id][0][0]
+            node_id_left_child = None
+            node_id_right_child = None
+            return [node_id, is_root_node, is_leaf_node, node_feature,node_threshold,node_impurity, impurity_reduction, samples, samples_percent, value, node_id_left_child,node_id_right_child]
+        elif tree.children_left[node_id] == -1 or tree.children_right[node_id] == -1:
+            print('Impossible split '+str(node_id))
+        else:
+            node_feature = int(tree.feature[node_id])
+            node_threshold = tree.threshold[node_id]
+            node_impurity = tree.impurity[node_id]
+            node_id_left_child = int(tree.children_left[node_id])
+            node_id_right_child = int(tree.children_right[node_id])
+            parent_impurity = tree.impurity[node_id]
+            left_child_impurity = tree.impurity[node_id_left_child]
+            right_child_impurity = tree.impurity[node_id_right_child]
+            root_samples = tree.n_node_samples[0]
+            parent_samples = tree.n_node_samples[node_id]
+            left_samples = tree.n_node_samples[node_id_left_child]
+            right_samples = tree.n_node_samples[node_id_right_child]
+            left_samples_percent = left_samples/root_samples
+            right_samples_percent = right_samples/root_samples
+            left_weighted_impurity = left_samples_percent * left_child_impurity
+            right_weighted_impurity = right_samples_percent * right_child_impurity
+            impurity_reduction = parent_impurity - (left_weighted_impurity +right_weighted_impurity)
+            #impurity_reduction_percent = impurity_reduction / node_impurity * 100
+            samples = tree.n_node_samples[node_id]
+            samples_percent  = tree.n_node_samples[node_id]/tree.n_node_samples[0]
+            value = tree.value[node_id][0][0]
+            return [node_id, is_root_node, is_leaf_node,node_feature,node_threshold,node_impurity,impurity_reduction, samples, samples_percent, value, node_id_left_child,node_id_right_child]
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++    
+    def analyze_forest(self,X):
+        forest_d_path_enrich = []
+        forest_d_path_raw = self._get_forest_d_path(X)
+        for tree in forest_d_path_raw:
+            tree_d_path_enrich = []
+            for i in range(len(tree)-1):
+                p_dnode = tree[i]
+                c_dnode = tree[i+1]
+                if p_dnode[2] == False:
+                    if not c_dnode[0] in [p_dnode[10],p_dnode[11]]:
+                        print('child of dnode does not exist')
+                    else:
+                        vcontr = c_dnode[9]-p_dnode[9]
+                        vcontrpc = vcontr/p_dnode[9]
+                        p_dnode.append(vcontr)
+                        p_dnode.append(vcontrpc)
+                        if c_dnode[0] == p_dnode[11]:
+                            p_dnode.append(False)
+                        else:
+                            p_dnode.append(True)
+                        tree_d_path_enrich.append(p_dnode)
+        
+        tree_d_path_enrich.append(tree[i+1])
+        forest_d_path_enrich.append(tree_d_path_enrich)
+
+        df = pd.DataFrame()
+        for tree in forest_d_path_enrich:
+            df = df.append(tree)
+        df.columns=['NodeID', 'IsRoot', 'IsLeaf','Feature','Threshold','Impurity','ImpuriyRed', 'Samples', 'Samples%', 'Value', 'NodeID_LC', 'NodeID_RC', 'Value_Change', 'Value_Change%','IsLessThan']
+        
+        groups = df.groupby('Feature')
+        #for features, features_df in groups:
+        #    print(features_df)
+
+        i = 0
+        sum = 0
+        for tree in forest_d_path_enrich:
+            if tree[0][1] == True:
+                sum = sum + tree[0][9]
+                i = i + 1
+            else:
+                print('Tree without root node!')
+        starting_value = sum / i
+        end_value = _b.predict(np.array(X_valid.iloc[0]).reshape(1,-1))[0]
+        
+        mean = df.groupby('Feature')['Value_Change'].mean()
+        count = df.groupby('Feature')['Value_Change'].count()
+        num_trees = len(_b.estimators_)
+        abs_change = mean * count / num_trees
+        perc_change = (mean * count / num_trees)/starting_value
+
+        all_feature_names = list(X_train.columns.values)
+        output = pd.DataFrame()
+        selected_feat_names = []
+        for feat_num in mean.index:
+            feat_num = int(feat_num)
+            selected_feat_names.append(all_feature_names[feat_num])
+        output['Feat#']=mean.index
+        tmp = []
+        [tmp.append(starting_value) for _ in range(len(output))]
+        output['startingv'] = tmp
+        tmp.clear()
+        [tmp.append(end_value) for _ in range(len(output))]
+        output['endv'] = tmp
+        output['FeatName']=selected_feat_names
+        output['Abs_Cha']=list(abs_change)
+        output['Perc_Cha']=list(perc_change)
+        
+        rules = []
+        for feat in groups:
+            is_all_true = None
+            is_all_false = None
+            is_both = None
+            feat_num = feat[0]
+            feat_rules = feat[1].iloc[:,14]
+            is_all_true = all(x in feat_rules.tolist() for x in [True])
+            is_all_false = all(x in feat_rules.tolist() for x in [False])
+            is_both = all(x in feat_rules.tolist() for x in [True,False])
+            if is_both:
+                is_all_true = False
+                is_all_false = False
+            rules.append([feat_num,is_all_true,is_all_false,is_both])
+          
+            rule_nodes = []
+            rule_results = []
+            maxi = None
+            mini = None
+            for rule in rules:
+            #all true -> take greates value
+                rule_nodes = df.loc[df['Feature'] == rule[0]]
+                if rule[1] == True and rule[2] == False and rule[3] == False:
+                    maxi = max(rule_nodes['Threshold'].unique().tolist())
+                #        rule.extend([maxi,None])      
+                    rule_results.append([0,maxi,None])
+                #all false -> take smallest value
+                elif rule[1] == False and rule[2] == True and rule[3] == False:
+                    mini = min(rule_nodes['Threshold'].unique().tolist())
+                #        rule.extend([mini,None])
+                    rule_results.append([1,mini,None])
+                #mixed -> take smallest and highest
+                elif rule[1] == False and rule[2] == False and rule[3] == True:
+                    maxi = max(rule_nodes['Threshold'].unique().tolist())
+                    mini = min(rule_nodes['Threshold'].unique().tolist())
+                #        rule.extend([maxi,mini])
+                    rule_results.append([2,maxi,mini])
+                else: print('inconsistent rule detected')
+                
+        
+        output['max/min/both']=[row[0] for row in rule_results]
+        output['thresh1']=[row[1] for row in rule_results]
+        output['thresh2']=[row[2] for row in rule_results]
+        output.sort_values('Perc_Cha',inplace = True) 
+        return output
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
